@@ -216,13 +216,15 @@ def get_graph_chain():
     from langchain_community.graphs import Neo4jGraph
     from langchain_classic.chains import GraphCypherQAChain
 
-    graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD)
+    graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD,enhanced_schema=False)
     graph.refresh_schema()
     return GraphCypherQAChain.from_llm(
         llm=get_llm(),
         graph=graph,
-        verbose=False,
+        verbose=True,
         allow_dangerous_requests=True,
+        return_direct=True,
+        return_intermediate_steps=True
         # NOTE: return_direct=False (the default) on purpose. With
         # return_direct=True, this chain hands back bare Cypher rows (e.g.
         # raw Equipment node properties) with no explanation of *why* they
@@ -321,11 +323,11 @@ def classify_routes(question: str):
 
 
 def gather_evidence(question: str, routes: list):
-    retriever, _ = get_retriever()
     evidence_parts = []
     detail = {}
 
     if "vector" in routes:
+        retriever, _ = get_retriever()
         docs = retriever.invoke(question)
         detail["vector"] = docs
         evidence_parts.append("DOCUMENT EXCERPTS:")
@@ -341,8 +343,28 @@ def gather_evidence(question: str, routes: list):
     if "graph" in routes:
         graph_chain = get_graph_chain()
         g = graph_chain.invoke({"query": question})
+
+        print("GRAPH CHAIN RAW OUTPUT:", g)
+
         detail["graph"] = g
-        evidence_parts.append(f"\nGRAPH ANSWER: {g['result']}")
+
+        graph_steps = g.get("intermediate_steps", [])
+
+        generated_cypher = next(
+            (step["query"] for step in graph_steps if "query" in step),
+            "Cypher query unavailable"
+        )
+
+        graph_context = next(
+            (step["context"] for step in graph_steps if "context" in step),
+            g["result"]
+        )
+
+        evidence_parts.append("\nGRAPH CYPHER QUERY:")
+        evidence_parts.append(generated_cypher)
+
+        evidence_parts.append("\nGRAPH DATABASE RESULTS:")
+        evidence_parts.append(str(graph_context))
 
     return "\n".join(evidence_parts), detail
 

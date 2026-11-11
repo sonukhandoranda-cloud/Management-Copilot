@@ -1,3 +1,11 @@
 .env
 rag_env/
 chrome_env/
+NoteBooks/chroma_db_clean/
+.env
+rag_env/
+chrome_env/
+venv/
+NoteBooks/chroma_db_clean/
+__pycache__/
+*.pyc

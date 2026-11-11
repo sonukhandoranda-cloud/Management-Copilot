@@ -33,8 +33,8 @@ MAINTENANCE_XLSX = DATASET_DIR / "maintenance_reports" / "maintenance_reports.xl
 INSPECTION_XLSX = DATASET_DIR / "inspection_reports" / "inspection_reports.xlsx"
 INCIDENT_XLSX = DATASET_DIR / "incident_reports" / "incident_reports.xlsx"
 
-CHROMA_DIR = Path("./chroma_db")
-CHROMA_COLLECTION = "plant_documents"
+CHROMA_DIR = Path("./chroma_db_clean")
+CHROMA_COLLECTION = "plant_documents_clean"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")

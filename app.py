@@ -154,27 +154,61 @@ def get_retriever():
 
 @st.cache_resource(show_spinner="Connecting to structured data...")
 def get_sql_tools():
-    from langchain_community.utilities import SQLDatabase
-    from langchain_classic.chains import create_sql_query_chain
-    from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
 
-    df_equipment = pd.read_excel(EQUIPMENT_XLSX)
-    df_maintenance = pd.read_excel(MAINTENANCE_XLSX)
-    df_inspection = pd.read_excel(INSPECTION_XLSX)
-    df_incident = pd.read_excel(INCIDENT_XLSX)
+    duckdb_path = Path("plant_data.duckdb")
 
-    duckdb_path = "plant_data.duckdb"
-    con = duckdb.connect(duckdb_path)
-    con.execute("CREATE OR REPLACE TABLE equipment AS SELECT * FROM df_equipment")
-    con.execute("CREATE OR REPLACE TABLE maintenance AS SELECT * FROM df_maintenance")
-    con.execute("CREATE OR REPLACE TABLE inspection AS SELECT * FROM df_inspection")
-    con.execute("CREATE OR REPLACE TABLE incident AS SELECT * FROM df_incident")
-    con.close()
+    if not duckdb_path.exists():
+        raise FileNotFoundError(
+            f"Database not found: {duckdb_path.resolve()}"
+        )
 
-    sql_db = SQLDatabase.from_uri(f"duckdb:///{duckdb_path}")
-    write_sql_query = create_sql_query_chain(get_llm(), sql_db)
-    run_sql_query = QuerySQLDataBaseTool(db=sql_db)
-    return write_sql_query, run_sql_query
+    # Read the existing database schema using native DuckDB
+    with duckdb.connect(str(duckdb_path), read_only=True) as con:
+        tables = con.execute("SHOW TABLES").fetchall()
+
+        schema_parts = []
+
+        for (table_name,) in tables:
+            columns = con.execute(
+                f'DESCRIBE "{table_name}"'
+            ).fetchall()
+
+            column_info = ", ".join(
+                f"{column[0]} ({column[1]})"
+                for column in columns
+            )
+
+            schema_parts.append(
+                f"Table: {table_name}\nColumns: {column_info}"
+            )
+
+    schema = "\n\n".join(schema_parts)
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """You are an expert DuckDB SQL query generator.
+
+Generate a valid DuckDB SELECT query for the user's question.
+
+Database schema:
+{schema}
+
+Rules:
+- Generate SELECT queries only.
+- Use only the tables and columns provided.
+- Never generate INSERT, UPDATE, DELETE, DROP or ALTER.
+- Do not invent column names.
+- Return only the SQL query, without explanations or markdown."""
+        ),
+        ("human", "{question}")
+    ])
+
+    write_sql_query =  prompt.partial(schema=schema) | get_llm() | StrOutputParser()
+
+    return write_sql_query, str(duckdb_path)
 
 
 @st.cache_resource(show_spinner="Connecting to Neo4j...")
@@ -221,17 +255,44 @@ def _clean_sql(raw: str) -> str:
     return s.strip()
 
 
+
 def structured_search(question: str):
-    write_sql_query, run_sql_query = get_sql_tools()
+    write_sql_query, duckdb_path = get_sql_tools()
+
     raw_sql = write_sql_query.invoke({"question": question})
     sql = _clean_sql(raw_sql)
-    if not sql.upper().startswith("SELECT"):
-        return {"sql": sql, "result": None, "error": f"Refused: generated query was not a SELECT (got: {sql[:80]!r})"}
+
+    if not re.match(r"^(SELECT|WITH)\b", sql, re.IGNORECASE):
+        return {
+            "sql": sql,
+            "result": None,
+            "error": "Refused: only SELECT queries are allowed."
+        }
+
+    # Allow at most one SQL statement
+    if ";" in sql.rstrip(";"):
+        return {
+            "sql": sql,
+            "result": None,
+            "error": "Refused: multiple SQL statements are not allowed."
+        }
+
     try:
-        result = run_sql_query.invoke(sql)
-        return {"sql": sql, "result": result, "error": None}
+        with duckdb.connect(duckdb_path, read_only=True) as con:
+            result = con.execute(sql).fetchdf()
+
+        return {
+            "sql": sql,
+            "result": result.to_string(index=False),
+            "error": None
+        }
+
     except Exception as e:
-        return {"sql": sql, "result": None, "error": str(e)}
+        return {
+            "sql": sql,
+            "result": None,
+            "error": str(e)
+        }
 
 
 ROUTE_SYSTEM_PROMPT = """Classify a plant-maintenance question into one or more routes:

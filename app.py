@@ -201,6 +201,23 @@ Rules:
 - Use only the tables and columns provided.
 - Never generate INSERT, UPDATE, DELETE, DROP or ALTER.
 - Do not invent column names.
+
+- When the user specifies a complete equipment name, prefer
+  exact matching using = rather than partial matching with LIKE
+  or ILIKE.
+- Use LIKE or ILIKE only when the user explicitly provides
+  a partial name or asks for broad matching.
+
+- Avoid joining multiple one-to-many child tables directly
+  to the same parent table in one query.
+- Such joins can multiply rows and produce duplicate combinations.
+- When retrieving multiple record types (such as maintenance
+  and incidents), use separate CTEs and combine their results
+  with UNION ALL where appropriate.
+- Keep each maintenance or incident record represented only once.
+- Do not remove legitimate records using DISTINCT merely
+  to hide row multiplication.
+
 - Return only the SQL query, without explanations or markdown."""
         ),
         ("human", "{question}")

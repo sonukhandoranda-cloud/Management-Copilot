@@ -450,21 +450,107 @@ if question:
 
         st.markdown(result["answer"])
 
+        
         with st.expander(f"Sources used (routes: {', '.join(result['routes'])})"):
             detail = result["detail"]
+
+            # Vector RAG sources
             if "vector" in detail:
-                st.markdown("**Document excerpts**")
-                for d in detail["vector"]:
-                    st.markdown(f"- `{d.metadata.get('source_file')}` (page {d.metadata.get('page')}): {d.page_content[:200]}...")
+                st.markdown("### Document Sources")
+
+                for i, d in enumerate(detail["vector"], start=1):
+                    source = d.metadata.get("source_file", "Unknown source")
+                    page = d.metadata.get("page", "Unknown")
+
+                    with st.container(border=True):
+                        st.markdown(f"**{i}. {source}**")
+                        st.caption(f"Page: {page}")
+                        st.write(d.page_content[:400])
+
+            # Structured RAG sources
             if "structured" in detail:
-                st.markdown("**Structured query**")
-                st.code(detail["structured"]["sql"], language="sql")
-                if detail["structured"]["error"]:
-                    st.error(detail["structured"]["error"])
+                st.markdown("### Structured Data")
+
+                structured = detail["structured"]
+
+                with st.expander("View generated SQL"):
+                    st.code(structured["sql"], language="sql")
+
+                if structured["error"]:
+                    st.error(structured["error"])
+                elif structured["result"]:
+                    st.code(structured["result"], language="text")
                 else:
-                    st.write(detail["structured"]["result"])
-            if "graph" in detail:
-                st.markdown("**Graph answer**")
-                st.write(detail["graph"]["result"])
+                    st.info("No structured records found.")
+
+            # Graph RAG sources
+            # Graph RAG sources
+                if "graph" in detail:
+                    st.markdown("### Graph Data")
+
+                    graph_result = detail["graph"]["result"]
+
+                    if isinstance(graph_result, dict):
+                        graph_records = [graph_result]
+                    elif isinstance(graph_result, list):
+                        graph_records = graph_result
+                    else:
+                        graph_records = []
+
+                    if graph_records:
+                        for i, record in enumerate(graph_records, start=1):
+
+                            if not isinstance(record, dict):
+                                st.write(record)
+                                continue
+
+                            st.markdown(f"**Graph Record {i}**")
+
+                            # Equipment details
+                            equipment = (
+                                record.get("e")
+                                or record.get("Equipment")
+                                or record.get("equipment")
+                            )
+
+                            if equipment:
+                                with st.expander("Equipment Details"):
+                                    st.json(equipment)
+
+                            # Maintenance history
+                            maintenance = (
+                                record.get("maintenance_records")
+                                or record.get("MaintenanceHistory")
+                                or record.get("maintenance_history")
+                                or []
+                            )
+
+                            with st.expander(f"Maintenance History ({len(maintenance)})"):
+                                for item in maintenance:
+                                    record_id = item.get("report_id", "Unknown ID")
+                                    date = item.get("date", "Unknown date")
+
+                                    with st.expander(f"{record_id} — {date}"):
+                                        st.json(item)
+
+                            # Incident history
+                            incidents = (
+                                record.get("incident_records")
+                                or record.get("IncidentHistory")
+                                or record.get("incident_history")
+                                or []
+                            )
+
+                            with st.expander(f"Incident History ({len(incidents)})"):
+                                for item in incidents:
+                                    record_id = item.get("incident_id", "Unknown ID")
+                                    date = item.get("incident_date", "Unknown date")
+
+                                    with st.expander(f"{record_id} — {date}"):
+                                        st.json(item)
+
+                    else:
+                        st.write(graph_result)
+
 
     st.session_state.history.append({"role": "assistant", "content": result["answer"]})

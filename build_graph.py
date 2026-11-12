@@ -14,9 +14,10 @@ load_dotenv(".env")
 
 DUCKDB_PATH = "NoteBooks/plant_data.duckdb"
 
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_URI = os.getenv("NEO4J_URI")
+NEO4J_USER = os.getenv("NEO4J_USERNAME")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 BATCH_SIZE = 500
 
@@ -177,7 +178,7 @@ def build_graph():
     print("Neo4j connected.")
 
     try:
-        with driver.session() as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
 
             # Check existing graph before importing
             before = session.run("""

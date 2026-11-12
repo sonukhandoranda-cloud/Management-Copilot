@@ -40,9 +40,10 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password123")
+NEO4J_URI = os.getenv("NEO4J_URI")
+NEO4J_USER = os.getenv("NEO4J_USERNAME")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE")
 
 TOP_K = 5
 
@@ -228,29 +229,58 @@ Rules:
     return write_sql_query, str(duckdb_path)
 
 
+
 @st.cache_resource(show_spinner="Connecting to Neo4j...")
 def get_graph_chain():
     from langchain_community.graphs import Neo4jGraph
     from langchain_classic.chains import GraphCypherQAChain
+    from langchain_core.prompts import PromptTemplate
 
-    graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD,enhanced_schema=False)
+    graph = Neo4jGraph(
+        url=NEO4J_URI,
+        username=NEO4J_USER,
+        password=NEO4J_PASSWORD,
+        database=NEO4J_DATABASE,
+        enhanced_schema=False
+    )
     graph.refresh_schema()
+
+    cypher_prompt = PromptTemplate(
+        input_variables=["schema", "question"],
+        template="""
+You are an expert Neo4j Cypher query generator.
+
+Use ONLY the following graph schema:
+{schema}
+
+IMPORTANT RULES:
+1. Equipment properties include equipment_name, equipment_code and equipment_id.
+2. equipment_name and equipment_code are separate properties.
+3. If a question mentions an equipment code such as P-101,
+   search using e.equipment_code = 'P-101'.
+4. Do not append equipment codes to equipment names.
+5. For maintenance history use:
+   (e)-[:UNDERWENT_MAINTENANCE]->(m:MaintenanceRecord)
+6. For incident history use:
+   (e)-[:HAD_INCIDENT]->(i:IncidentRecord)
+7. Use OPTIONAL MATCH when retrieving multiple history types.
+8. Return the requested records and relevant equipment properties.
+9. Generate a read-only Cypher query only.
+
+Question: {question}
+
+Return ONLY the Cypher query. Do not include markdown fences.
+"""
+    )
+
     return GraphCypherQAChain.from_llm(
         llm=get_llm(),
         graph=graph,
+        cypher_prompt=cypher_prompt,
         verbose=True,
         allow_dangerous_requests=True,
         return_direct=True,
         return_intermediate_steps=True
-        # NOTE: return_direct=False (the default) on purpose. With
-        # return_direct=True, this chain hands back bare Cypher rows (e.g.
-        # raw Equipment node properties) with no explanation of *why* they
-        # matched -- our downstream answer_chain then can't see the
-        # incident/maintenance details that justified the match and ends up
-        # saying "no evidence" even when the graph traversal was correct.
-        # With return_direct=False, GraphCypherQAChain synthesizes its own
-        # natural-language answer from the actual query results, which we
-        # then pass along as evidence -- much more reliable.
     )
 
 
@@ -344,13 +374,35 @@ def gather_evidence(question: str, routes: list):
     detail = {}
 
     if "vector" in routes:
-        retriever, _ = get_retriever()
-        docs = retriever.invoke(question)
-        detail["vector"] = docs
-        evidence_parts.append("DOCUMENT EXCERPTS:")
-        for d in docs:
-            evidence_parts.append(f"- [{d.metadata.get('source_file')}, p.{d.metadata.get('page')}] {d.page_content[:400]}")
+        from langchain_huggingface import HuggingFaceEmbeddings
+        from langchain_chroma import Chroma
 
+        embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+        vectorstore = Chroma(
+            collection_name=CHROMA_COLLECTION,
+            embedding_function=embeddings,
+            persist_directory=str(CHROMA_DIR),
+        )
+
+        results = vectorstore.similarity_search_with_score(
+            question,
+            k=TOP_K
+        )
+
+        docs = [doc for doc, score in results]
+
+        detail["vector"] = docs
+        detail["vector_scores"] = [score for doc, score in results]
+
+        evidence_parts.append("DOCUMENT EXCERPTS:")
+
+        for d in docs:
+            evidence_parts.append(
+                f"- [{d.metadata.get('source_file')}, "
+                f"p.{d.metadata.get('page')}] {d.page_content[:400]}"
+            )
+    
     if "structured" in routes:
         s = structured_search(question)
         detail["structured"] = s
@@ -458,13 +510,16 @@ if question:
             if "vector" in detail:
                 st.markdown("### Document Sources")
 
-                for i, d in enumerate(detail["vector"], start=1):
+                for i, (d, score) in enumerate(
+                    zip(detail["vector"], detail["vector_scores"]),
+                    start=1
+                ):
                     source = d.metadata.get("source_file", "Unknown source")
                     page = d.metadata.get("page", "Unknown")
 
                     with st.container(border=True):
                         st.markdown(f"**{i}. {source}**")
-                        st.caption(f"Page: {page}")
+                        st.caption(f"Page: {page} | Distance score: {score:.4f}")
                         st.write(d.page_content[:400])
 
             # Structured RAG sources

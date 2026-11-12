@@ -22,3 +22,5 @@ langchain-text-splitters
 langchain-core
 pypdf
 tabulate
+streamlit
+langchain-classic

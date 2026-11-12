@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+.git/
+.env
+chroma_db/
+NoteBooks/chroma_db/
+NoteBooks/graph_structured_rag.ipynb
+NoteBooks/Vector_rag_langchain.ipynb
+NoteBooks/inspect_chroma.py

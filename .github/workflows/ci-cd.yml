@@ -1,0 +1,119 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, fix/chroma-deduplication]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax check
+        run: python -m py_compile app.py build_graph.py clean_chroma.py
+
+      # Key-free smoke tests. test_graph_rag.py is not run: it needs live
+      # Neo4j and Gemini credentials.
+      - name: Smoke tests
+        run: |
+          python - <<'PY'
+          import ast, re
+          from pathlib import Path
+
+          src = Path("app.py").read_text(encoding="utf-8")
+          tree = ast.parse(src)
+          funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+          required = {"get_llm", "get_retriever", "get_sql_tools", "get_graph_chain",
+                      "structured_search", "classify_routes", "gather_evidence", "answer_question"}
+          missing = required - set(funcs)
+          assert not missing, f"missing functions: {missing}"
+
+          for route in ("vector", "structured", "graph"):
+              assert route in src, f"router missing '{route}' route"
+
+          assert 'startswith("SELECT")' in src, "SELECT-only guard missing"
+
+          ns = {"re": re}
+          exec(ast.get_source_segment(src, funcs["_clean_sql"]), ns)
+          clean = ns["_clean_sql"]
+          assert clean("```sql\nSELECT 1\n```") == "SELECT 1"
+          assert clean("SQLQuery: SELECT * FROM equipment") == "SELECT * FROM equipment"
+
+          reqs = {re.split(r"[<>=!~ \[]", r.strip().lower())[0]
+                  for r in Path("requirements.txt").read_text().splitlines() if r.strip()}
+          for pkg in ("chromadb", "duckdb", "neo4j", "sentence-transformers",
+                      "langchain-google-genai", "langchain-chroma", "streamlit"):
+              assert pkg in reqs, f"{pkg} missing from requirements.txt"
+
+          print("all smoke tests passed")
+          PY
+
+  docker:
+    name: Docker build
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: Build image from the repo Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: management-copilot:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test container
+        run: |
+          docker run --rm management-copilot:ci python -c "import streamlit, chromadb, duckdb, neo4j, sentence_transformers, langchain_google_genai, langchain_chroma, langchain_huggingface, langchain_classic; print('imports ok')"
+          docker run --rm management-copilot:ci streamlit --version
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
